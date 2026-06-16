@@ -5,20 +5,25 @@ import time
 from typing import List, Optional
 
 
+import threading
+
+
 class SingletonMeta(type):
     logging = logging.getLogger(__name__)
     _instances: dict = {}
+    _local = threading.local()
 
     def __call__(cls, *args, **kwargs) -> "SingletonMeta":
-        if cls not in cls._instances:
-            try:
-                instance = super().__call__(*args, **kwargs)
-                cls._instances[cls] = instance
-            except:
-                # remove failed entry so future calls can retry
-                cls._instances.pop(cls, None)
-                raise
-        return cls._instances.get(cls)
+        if not hasattr(cls._local, "instance") or cls._local.instance is None:
+            if cls not in cls._instances:
+                try:
+                    instance = super().__call__(*args, **kwargs)
+                    cls._instances[cls] = instance
+                except:
+                    cls._instances.pop(cls, None)
+                    raise
+            cls._local.instance = cls._instances.get(cls)
+        return cls._local.instance
 
 
 class ConnectionManager(metaclass=SingletonMeta):
