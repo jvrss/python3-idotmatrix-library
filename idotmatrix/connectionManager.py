@@ -15,9 +15,10 @@ class SingletonMeta(type):
                 instance = super().__call__(*args, **kwargs)
                 cls._instances[cls] = instance
             except:
-                # return None if wrong (or no arguments are given)
-                cls._instances[cls] = None
-        return cls._instances[cls]
+                # remove failed entry so future calls can retry
+                cls._instances.pop(cls, None)
+                raise
+        return cls._instances.get(cls)
 
 
 class ConnectionManager(metaclass=SingletonMeta):
