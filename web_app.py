@@ -1,4 +1,4 @@
-from flask import Flask, render_template_string, request, jsonify
+from flask import Flask, render_template_string, request, jsonify, send_file
 import asyncio
 import os
 import uuid
@@ -421,7 +421,10 @@ HTML = """
                     <label>Arquivo .gif</label>
                     <input type="file" id="gifFile" accept="image/gif,.gif" required>
                 </div>
-                <div>
+                <div class="gif-preview-inline" id="gifPreviewInline" style="display:none; align-items:center;">
+                    <img id="gifPreviewImg" style="max-width:120px; max-height:120px; border-radius:8px; background:#1a1a2e;" crossorigin="anonymous">
+                </div>
+                <div class="gif-btn-inline" id="gifBtnInline" style="flex: 0 0 auto;">
                     <button id="btnGif" type="submit" disabled>Enviar GIF</button>
                 </div>
             </div>
@@ -450,6 +453,9 @@ HTML = """
                     <label>Arquivo .gif</label>
                     <input type="file" id="schedGifFile" accept="image/gif,.gif" required>
                 </div>
+                <div class="file-preview">
+                    <img id="schedGifPreviewImg" style="width:64px; height:64px; object-fit:contain; border-radius:6px; display:none; background:#1a1a2e;">
+                </div>
                 <div>
                     <label>In&iacute;cio</label>
                     <input type="time" id="schedStart" value="08:00" required>
@@ -458,6 +464,10 @@ HTML = """
                     <label>Fim</label>
                     <input type="time" id="schedEnd" value="18:00" required>
                 </div>
+            </div>
+            <div class="gif-preview-container" style="margin-top:0.75rem; display:none;">
+                <strong>Preview do agendamento:</strong>
+                <img id="schedGifPreviewImg" style="display:block; margin-top:0.35rem; max-width:240px; max-height:240px; border-radius:8px; background:#1a1a2e;" crossorigin="anonymous">
             </div>
             <div class="row">
                 <div>
@@ -518,6 +528,72 @@ HTML = """
         <h3 style="margin-top: 1.5rem; font-size: 1rem;">Agendamentos</h3>
         <div id="scheduleList"></div>
     </div>
+
+    <div class="card" id="editModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); z-index:1000; max-width:420px; width:90%;">
+        <h2 style="margin-top:0">Editar agendamento</h2>
+        <form id="editScheduleForm">
+            <input type="hidden" id="editId" value="">
+            <div class="row">
+                <div>
+                    <label>In&iacute;cio</label>
+                    <input type="time" id="editStart" required>
+                </div>
+                <div>
+                    <label>Fim</label>
+                    <input type="time" id="editEnd" required>
+                </div>
+            </div>
+            <div class="row">
+                <div>
+                    <label>Segundos de GIF</label>
+                    <input type="number" id="editGifSec" min="1" value="10">
+                </div>
+                <div>
+                    <label>Segundos de rel&oacute;gio</label>
+                    <input type="number" id="editClockSec" min="1" value="12">
+                </div>
+                <div>
+                    <label>Estilo (0-7)</label>
+                    <input type="number" id="editClockStyle" min="0" max="7" value="4">
+                </div>
+            </div>
+            <div class="row">
+                <div>
+                    <label>Formato</label>
+                    <select id="editClock24">
+                        <option value="1">24h</option>
+                        <option value="0">12h</option>
+                    </select>
+                </div>
+                <div>
+                    <label>Mostrar data</label>
+                    <select id="editClockDate">
+                        <option value="1">Sim</option>
+                        <option value="0">N&atilde;o</option>
+                    </select>
+                </div>
+                <div style="flex: 2 1 200px;">
+                    <label>Cor (R G B)</label>
+                    <div class="color-row">
+                        <input type="number" id="editR" min="0" max="255" value="255">
+                        <input type="number" id="editG" min="0" max="255" value="255">
+                        <input type="number" id="editB" min="0" max="255" value="255">
+                    </div>
+                </div>
+            </div>
+            <div>
+                <label>Dias da semana</label>
+                <div class="days" id="editDaysContainer"></div>
+            </div>
+            <div style="margin-top:0.75rem; display:flex; gap:0.5rem;">
+                <button type="submit">Salvar</button>
+                <button type="button" id="btnCancelEdit" class="secondary">Cancelar</button>
+            </div>
+        </form>
+        <div id="editScheduleStatus" class="status"></div>
+    </div>
+
+    <div id="editOverlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:999;"></div>
 
 </div>
 
@@ -677,6 +753,7 @@ async function refreshSchedule() {
         const days = (it.days || []).join(", ");
         return `
         <div class="schedule-item" data-id="${it.id}">
+            <img src="/schedule/gif/${it.id}" loading="lazy" style="width:64px; height:64px; object-fit:contain; border-radius:6px; background:#1a1a2e;" alt="preview">
             <div class="info">
                 <strong>${it.gif_name || '(gif)'}</strong>
                 <small>${it.start_time} - ${it.end_time} &middot; ${days}</small><br>
@@ -684,6 +761,7 @@ async function refreshSchedule() {
             </div>
             <div class="actions">
                 <button class="secondary" onclick="toggleItem('${it.id}', ${!it.enabled})">${it.enabled ? 'Pausar' : 'Ativar'}</button>
+                <button class="secondary" onclick="editItem('${it.id}')">Editar</button>
                 <button class="danger" onclick="deleteItem('${it.id}')">Excluir</button>
             </div>
         </div>`;
@@ -719,6 +797,105 @@ window.deleteItem = async (id) => {
     if (!confirm("Excluir este agendamento?")) return;
     await postJSON("/schedule/delete", {id});
     refreshSchedule();
+};
+
+document.getElementById("gifFile").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    const img = document.getElementById("gifPreviewImg");
+    if (file && file.type === "image/gif") {
+        img.src = URL.createObjectURL(file);
+        const inline = document.getElementById("gifPreviewInline");
+        inline.style.display = "flex";
+    } else {
+        document.getElementById("gifPreviewInline").style.display = "none";
+    }
+});
+
+document.getElementById("schedGifFile").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    const schedContainer = document.querySelector("#scheduleForm .gif-preview-container-inline");
+    const schedImg = document.getElementById("schedGifPreviewInline");
+    if (file && file.type === "image/gif") {
+        schedImg.src = URL.createObjectURL(file);
+        if (schedContainer) schedContainer.style.display = "flex";
+    } else if (schedContainer) {
+        schedContainer.style.display = "none";
+    }
+});
+
+window.editItem = async (id) => {
+    const r = await fetch("/schedule/get/" + id);
+    const data = await r.json();
+    if (!data.ok === false && !data.id) return;
+    document.getElementById("editId").value = data.id;
+    document.getElementById("editStart").value = data.start_time || "";
+    document.getElementById("editEnd").value = data.end_time || "";
+    document.getElementById("editGifSec").value = data.gif_seconds || 10;
+    document.getElementById("editClockSec").value = data.clock_seconds || 12;
+    document.getElementById("editClockStyle").value = data.clock_style || 4;
+    document.getElementById("editClock24").value = data.hour24 ? "1" : "0";
+    document.getElementById("editClockDate").value = data.visibleDate ? "1" : "0";
+    document.getElementById("editR").value = data.r || 255;
+    document.getElementById("editG").value = data.g || 255;
+    document.getElementById("editB").value = data.b || 255;
+    const daysContainer = document.getElementById("editDaysContainer");
+    const DAYS_PT = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"];
+    const currentDays = data.days || [];
+    daysContainer.innerHTML = DAYS_PT.map(d => {
+        const checked = currentDays.includes(d) ? 'checked' : '';
+        return `<label><input type="checkbox" value="${d}" ${checked}> ${d.charAt(0).toUpperCase() + d.slice(1)}</label>`;
+    }).join("");
+    document.getElementById("editModal").style.display = "block";
+    document.getElementById("editOverlay").style.display = "block";
+};
+
+document.getElementById("btnCancelEdit").onclick = () => {
+    document.getElementById("editModal").style.display = "none";
+    document.getElementById("editOverlay").style.display = "none";
+};
+document.getElementById("editOverlay").onclick = () => {
+    document.getElementById("editModal").style.display = "none";
+    document.getElementById("editOverlay").style.display = "none";
+};
+
+document.getElementById("editScheduleForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const daysContainer = document.getElementById("editDaysContainer");
+    const days = Array.from(daysContainer.querySelectorAll("input:checked")).map(c => c.value);
+    if (days.length === 0) {
+        setStatus(document.getElementById("editScheduleStatus"), false, "Selecione pelo menos um dia.");
+        return;
+    }
+    const payload = {
+        id: document.getElementById("editId").value,
+        start_time: document.getElementById("editStart").value,
+        end_time: document.getElementById("editEnd").value,
+        gif_seconds: document.getElementById("editGifSec").value,
+        clock_seconds: document.getElementById("editClockSec").value,
+        clock_style: document.getElementById("editClockStyle").value,
+        hour24: document.getElementById("editClock24").value === "1",
+        visibleDate: document.getElementById("editClockDate").value === "1",
+        r: parseInt(document.getElementById("editR").value),
+        g: parseInt(document.getElementById("editG").value),
+        b: parseInt(document.getElementById("editB").value),
+        days: days.join(","),
+    };
+    const status = document.getElementById("editScheduleStatus");
+    status.className = "status";
+    status.textContent = "Salvando...";
+    status.style.display = "block";
+    try {
+        const r = await fetch("/schedule/edit", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
+        const data = await r.json();
+        setStatus(status, data.ok, data.ok ? "Agendamento atualizado!" : "Erro: " + data.error);
+        if (data.ok) {
+            document.getElementById("editModal").style.display = "none";
+            document.getElementById("editOverlay").style.display = "none";
+            refreshSchedule();
+        }
+    } catch (err) {
+        setStatus(status, false, "Erro: " + err);
+    }
 };
 
 btnToggleScheduler.onclick = async () => {
@@ -893,6 +1070,47 @@ def schedule_delete():
     return jsonify({"ok": True})
 
 
+@app.route("/schedule/edit", methods=["POST"])
+def schedule_edit():
+    payload = request.get_json(silent=True) or {}
+    item_id = payload.get("id")
+    items = load_schedule()
+    for it in items:
+        if it["id"] == item_id:
+            for key in ("start_time", "end_time"):
+                if key in payload:
+                    it[key] = str(payload[key])
+            days_list = payload.get("days")
+            if isinstance(days_list, str):
+                it["days"] = [d.strip() for d in days_list.split(",") if d.strip()]
+            elif isinstance(days_list, list):
+                it["days"] = days_list
+            for key in ("gif_seconds", "clock_seconds", "clock_style"):
+                if key in payload:
+                    it[key] = int(payload.get(key, 0))
+            hour24_val = payload.get("hour24")
+            if hour24_val is not None:
+                it["hour24"] = bool(hour24_val)
+            visibleDate_val = payload.get("visibleDate")
+            if visibleDate_val is not None:
+                it["visibleDate"] = bool(visibleDate_val)
+            for key in ("r", "g", "b"):
+                if key in payload:
+                    it[key] = int(payload.get(key, 0))
+            save_schedule(items)
+            return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "Item n\u00e3o encontrado"}), 404
+
+
+@app.route("/schedule/get/<item_id>", methods=["GET"])
+def schedule_get(item_id):
+    items = load_schedule()
+    for it in items:
+        if it["id"] == item_id:
+            return jsonify({**it, "days_str": ",".join(it.get("days", []))})
+    return jsonify({"ok": False, "error": "Item n\u00e3o encontrado"}), 404
+
+
 @app.route("/schedule/toggle", methods=["POST"])
 def schedule_toggle():
     payload = request.get_json(silent=True) or {}
@@ -918,6 +1136,17 @@ def state():
         state["pixels"] = int(payload["pixels"])
     save_state(state)
     return jsonify(state)
+
+
+@app.route("/schedule/gif/<item_id>")
+def schedule_gif_route(item_id):
+    items = load_schedule()
+    for it in items:
+        if it["id"] == item_id:
+            gif_path = it.get("gif_path", "")
+            if os.path.exists(gif_path):
+                return send_file(gif_path, mimetype="image/gif")
+    return jsonify({"ok": False}), 404
 
 
 if __name__ == "__main__":
