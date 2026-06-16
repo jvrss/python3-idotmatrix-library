@@ -868,7 +868,7 @@ def schedule_add():
         "end_time": request.form.get("end_time", "18:00"),
         "days": days,
         "gif_seconds": int(request.form.get("gif_seconds", 10)),
-        "clock_seconds": int(request.form.get("clock_seconds", 12)),
+        "clock_seconds": int(request.form.get("clock_seconds", 14)),
         "clock_style": int(request.form.get("clock_style", 4)),
         "hour24": request.form.get("hour24", "1") == "1",
         "visibleDate": request.form.get("visibleDate", "1") == "1",
