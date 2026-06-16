@@ -9,14 +9,25 @@ class Text:
     """Manages text processing and packet creation for iDotMatrix devices. With help from https://github.com/8none1/idotmatrix/ :)"""
 
     logging = logging.getLogger(__name__)
-    # must be 16x32 or 8x16
-    image_width = 16
-    image_height = 32
-    # must be x05 for 16x32 or x02 for 8x16
-    separator = b"\x05\xff\xff\xff"
 
-    def __init__(self) -> None:
+    # Mapping: display_size → (char_bitmap_width, char_bitmap_height, separator)
+    # Separator for 64x64 is experimental (not yet confirmed by reverse engineering)
+    DISPLAY_CONFIGS = {
+        16: (8,  16, b"\x02\xff\xff\xff"),
+        32: (16, 32, b"\x05\xff\xff\xff"),
+        64: (32, 64, b"\x05\xff\xff\xff"),  # separator byte for 64x64 is experimental
+    }
+
+    def __init__(self, display_size: int = 32) -> None:
         self.conn: ConnectionManager = ConnectionManager()
+        if display_size not in self.DISPLAY_CONFIGS:
+            self.logging.warning(
+                f"Text: display_size={display_size} is not a known size (16, 32, 64). "
+                f"Falling back to 32."
+            )
+            display_size = 32
+        self.image_width, self.image_height, self.separator = self.DISPLAY_CONFIGS[display_size]
+        self.display_size = display_size
 
     async def setMode(
         self,
@@ -126,7 +137,12 @@ class Text:
     def _StringToBitmaps(
         self, text: str, font_path: Optional[str] = None, font_size: Optional[int] = 20
     ) -> bytearray:
-        """Converts text to bitmap images suitable for iDotMatrix devices."""
+        """Converts text to bitmap images suitable for iDotMatrix devices.
+        Character bitmap size is determined by display_size set in the constructor:
+          - 16x16 display → 8x16 bitmap per character  (separator 0x02, confirmed)
+          - 32x32 display → 16x32 bitmap per character (separator 0x05, confirmed)
+          - 64x64 display → 32x64 bitmap per character (separator 0x05, experimental)
+        """
         if not font_path:
             # using open source font from https://www.fontspace.com/rain-font-f22577
             font_path = "./fonts/Rain-DRM3.otf"

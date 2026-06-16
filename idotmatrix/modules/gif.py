@@ -119,7 +119,7 @@ class Gif:
 
         Args:
             file_path (str): path to the image file
-            pixel_size (int, optional): amount of pixels (either 16 or 32 makes sense). Defaults to 32.
+            pixel_size (int, optional): physical resolution of your display — use 16 for 16x16, 32 for 32x32, or 64 for 64x64. Defaults to 32.
 
         Returns:
             Union[bool, bytearray]: False if there's an error, otherwise returns bytearray payload
