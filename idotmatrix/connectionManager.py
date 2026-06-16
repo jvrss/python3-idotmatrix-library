@@ -28,18 +28,36 @@ class ConnectionManager(metaclass=SingletonMeta):
         self.client: Optional[BleakClient] = None
 
     @staticmethod
+    async def scanAll() -> List[dict]:
+        """Scan and return ALL BLE devices found (useful for discovering unknown device names)."""
+        logging.info("scanning for ALL bluetooth devices...")
+        devices = await BleakScanner.discover(return_adv=True)
+        all_devices = []
+        for key, (device, adv) in devices.items():
+            name = adv.local_name if isinstance(adv, AdvertisementData) and adv.local_name else device.name or "Unknown"
+            logging.info(f"[ALL DEVICES] address={device.address}  name={name}")
+            all_devices.append({"address": device.address, "name": name})
+        return all_devices
+
+    @staticmethod
     async def scan() -> List[str]:
         logging.info("scanning for iDotMatrix bluetooth devices...")
         devices = await BleakScanner.discover(return_adv=True)
         filtered_devices: List[str] = []
         for key, (device, adv) in devices.items():
-            if (
-                isinstance(adv, AdvertisementData)
-                and adv.local_name
-                and str(adv.local_name).startswith(BLUETOOTH_DEVICE_NAME)
-            ):
-                logging.info(f"found device {key} with name {adv.local_name}")
+            name = adv.local_name if isinstance(adv, AdvertisementData) and adv.local_name else device.name or ""
+            # Log every discovered device so the user can see what is found
+            logging.info(f"[SCAN] address={device.address}  name={name or 'Unknown'}")
+            if name and any(name.startswith(prefix) for prefix in BLUETOOTH_DEVICE_NAME):
+                logging.info(f"found matching device {device.address} with name {name}")
                 filtered_devices.append(device.address)
+        if not filtered_devices:
+            logging.warning(
+                "no iDotMatrix devices found. "
+                "Run scanAll() to see all visible BLE devices and verify the device name. "
+                "Then use connectByAddress('XX:XX:XX:XX:XX:XX') with the correct address, "
+                "or update BLUETOOTH_DEVICE_NAME in const.py."
+            )
         return filtered_devices
 
     async def connectByAddress(self, address: str) -> None:
@@ -53,7 +71,11 @@ class ConnectionManager(metaclass=SingletonMeta):
             self.address = devices[0]
             await self.connect()
         else:
-            self.logging.error("no target devices found.")
+            self.logging.error(
+                "no target devices found. "
+                "Check the logs above for all visible BLE devices. "
+                "You can connect directly with: await conn.connectByAddress('XX:XX:XX:XX:XX:XX')"
+            )
 
     async def connect(self) -> None:
         if self.address:
