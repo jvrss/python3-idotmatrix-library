@@ -1,6 +1,10 @@
 from pathlib import Path
-from idotmatrix.version import __version__
 from setuptools import setup, find_packages
+
+# Read version without importing the package (avoids triggering dependency imports)
+_version = {}
+exec((Path(__file__).parent / "idotmatrix" / "version.py").read_text(), _version)
+__version__ = _version["__version__"]
 
 # read the contents of your README file
 this_directory = Path(__file__).parent
