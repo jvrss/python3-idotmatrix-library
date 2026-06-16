@@ -1,0 +1,4 @@
+asyncio
+bleak
+pillow
+cryptography
