@@ -15,14 +15,16 @@ class SingletonMeta(type):
 
     def __call__(cls, *args, **kwargs) -> "SingletonMeta":
         if not hasattr(cls._local, "instance") or cls._local.instance is None:
+            instance = super().__call__(*args, **kwargs)
+            cls._local.instance = instance
             if cls not in cls._instances:
                 try:
                     instance = super().__call__(*args, **kwargs)
                     cls._instances[cls] = instance
+                    return cls._instances[cls]
                 except:
                     cls._instances.pop(cls, None)
                     raise
-            cls._local.instance = cls._instances.get(cls)
         return cls._local.instance
 
 
