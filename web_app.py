@@ -10,6 +10,9 @@ from werkzeug.utils import secure_filename
 
 from idotmatrix import Clock, Gif, Image, ConnectionManager
 
+import random
+import hashlib
+
 app = Flask(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -124,10 +127,41 @@ async def _send_gif(file_path: str, pixel_size: int):
     await gif.uploadProcessed(file_path, pixel_size=pixel_size)
 
 
+def _hash_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fp:
+        for chunk in iter(lambda: fp.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _existing_gif_by_hash(file_hash: str) -> str | None:
+    for name in list_library():
+        path = os.path.join(UPLOAD_FOLDER, name)
+        try:
+            if _hash_file(path) == file_hash:
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def list_library() -> list:
+    if not os.path.isdir(UPLOAD_FOLDER):
+        return []
+    return sorted(
+        f for f in os.listdir(UPLOAD_FOLDER)
+        if f.lower().endswith(".gif") and os.path.isfile(os.path.join(UPLOAD_FOLDER, f))
+    )
+
+
 async def _run_phase(item: dict, phase: str, pixel_size: int):
     if phase == "gif":
         await _enter_diy()
-        await _send_gif(item["gif_path"], pixel_size)
+        gifs = item.get("gifs") or ([item["gif_path"]] if item.get("gif_path") else [])
+        valid = [g for g in gifs if g and os.path.isfile(g)]
+        if valid:
+            await _send_gif(random.choice(valid), pixel_size)
     elif phase == "clock":
         await _set_clock(
             style=item.get("clock_style", 4),
@@ -216,6 +250,16 @@ class Scheduler:
 
 scheduler = Scheduler()
 scheduler.start()
+
+
+_library_loop_state: dict = {
+    "thread": None,
+    "stop": threading.Event(),
+    "enabled": False,
+    "paths": [],
+    "pixel_size": 32,
+    "interval": 0.0,
+}
 
 
 HTML = """
@@ -465,8 +509,8 @@ HTML = """
         <form id="scheduleForm" enctype="multipart/form-data">
             <div class="row">
                 <div style="flex: 2 1 200px;">
-                    <label>Arquivo .gif</label>
-                    <input type="file" id="schedGifFile" accept="image/gif,.gif" required>
+                    <label>Arquivos .gif (v&aacute;rios)</label>
+                    <input type="file" id="schedGifFile" accept="image/gif,.gif" multiple required>
                 </div>
                 <div class="file-preview">
                     <img id="schedGifPreviewImg" style="width:64px; height:64px; object-fit:contain; border-radius:6px; display:none; background:#1a1a2e;">
@@ -544,8 +588,47 @@ HTML = """
         <div id="scheduleList"></div>
     </div>
 
+    <div class="card" id="card-library">
+        <h2>5. Biblioteca de GIFs</h2>
+        <p style="margin: 0 0 0.75rem; color: var(--muted); font-size: 0.9rem;">
+            Marque os GIFs dispon&iacute;veis e toque em "Tocar aleat&oacute;rio" para sortear um, ou ative o modo cont&iacute;nuo para sortear repetidamente.
+        </p>
+        <div class="row">
+            <div>
+                <button id="btnRefreshLibrary" class="secondary">Atualizar lista</button>
+            </div>
+            <div>
+                <button id="btnSelectAllLibrary" class="secondary">Selecionar todos</button>
+            </div>
+            <div>
+                <button id="btnSelectNoneLibrary" class="secondary">Limpar</button>
+            </div>
+        </div>
+        <div class="row" style="margin-top:0.75rem;">
+            <div>
+                <label>Modo</label>
+                <select id="libraryMode">
+                    <option value="once">Apenas um aleat&oacute;rio</option>
+                    <option value="loop" selected>Cont&iacute;nuo (loop)</option>
+                </select>
+            </div>
+            <div>
+                <label>Intervalo (s)</label>
+                <input type="number" id="libraryInterval" min="0" value="10">
+            </div>
+            <div style="display:flex; gap:0.5rem; align-items:end;">
+                <button id="btnPlayRandom" disabled>Tocar aleat&oacute;rio</button>
+                <button id="btnStopRandom" class="secondary" disabled>Parar</button>
+            </div>
+        </div>
+        <div id="libraryStatus" class="status"></div>
+        <h3 style="margin-top: 1.25rem; font-size: 1rem;">GIFs dispon&iacute;veis</h3>
+        <div id="libraryGrid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap:0.6rem;"></div>
+    </div>
+
     <div class="card" id="editModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); z-index:1000; max-width:420px; width:90%;">
         <h2 style="margin-top:0">Editar agendamento</h2>
+        <p id="editGifInfo" style="margin: 0 0 0.75rem; color: var(--muted); font-size: 0.85rem;"></p>
         <form id="editScheduleForm">
             <input type="hidden" id="editId" value="">
             <div class="row">
@@ -766,11 +849,14 @@ async function refreshSchedule() {
     }
     schedList.innerHTML = items.map(it => {
         const days = (it.days || []).join(", ");
+        const gifs = it.gifs || it.gif_paths || (it.gif_path ? [it.gif_path] : []);
+        const count = gifs.length;
+        const label = count > 1 ? `${count} GIFs (aleat\u00f3rio)` : (it.gif_name || '(gif)');
         return `
         <div class="schedule-item" data-id="${it.id}">
             <img src="/schedule/gif/${it.id}" loading="lazy" style="width:64px; height:64px; object-fit:contain; border-radius:6px; background:#1a1a2e;" alt="preview">
             <div class="info">
-                <strong>${it.gif_name || '(gif)'}</strong>
+                <strong>${label}</strong>
                 <small>${it.start_time} - ${it.end_time} &middot; ${days}</small><br>
                 <small>GIF ${it.gif_seconds}s &rarr; rel&oacute;gio ${it.clock_seconds}s &middot; estilo ${it.clock_style}</small>
             </div>
@@ -853,6 +939,13 @@ window.editItem = async (id) => {
     document.getElementById("editR").value = data.r || 255;
     document.getElementById("editG").value = data.g || 255;
     document.getElementById("editB").value = data.b || 255;
+    const gifs = data.gifs || data.gif_paths || (data.gif_path ? [data.gif_path] : []);
+    const editInfo = document.getElementById("editGifInfo");
+    if (editInfo) {
+        editInfo.textContent = gifs.length > 0
+            ? `${gifs.length} GIF(s): ${gifs.map(g => g.split(/[\\/]/).pop()).join(", ")}`
+            : "Sem GIFs";
+    }
     const daysContainer = document.getElementById("editDaysContainer");
     const DAYS_PT = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"];
     const currentDays = data.days || [];
@@ -931,7 +1024,9 @@ document.getElementById("scheduleForm").onsubmit = async (e) => {
         return;
     }
     const form = new FormData();
-    form.append("file", fileInput.files[0]);
+    for (const f of fileInput.files) {
+        form.append("files", f);
+    }
     form.append("start_time", document.getElementById("schedStart").value);
     form.append("end_time", document.getElementById("schedEnd").value);
     form.append("gif_seconds", document.getElementById("schedGifSec").value);
@@ -960,6 +1055,81 @@ document.getElementById("scheduleForm").onsubmit = async (e) => {
 refreshSchedule();
 refreshState();
 setInterval(refreshState, 3000);
+
+const libraryGrid = document.getElementById("libraryGrid");
+const btnPlayRandom = document.getElementById("btnPlayRandom");
+const btnStopRandom = document.getElementById("btnStopRandom");
+const libraryStatus = document.getElementById("libraryStatus");
+
+function updateLibraryButtons() {
+    const checked = libraryGrid.querySelectorAll("input[type=checkbox]:checked").length;
+    btnPlayRandom.disabled = !isConnected || checked === 0;
+}
+
+async function refreshLibrary() {
+    const r = await fetch("/library");
+    const data = await r.json();
+    const items = data.items || [];
+    const previouslyChecked = new Set(
+        Array.from(libraryGrid.querySelectorAll("input[type=checkbox]:checked")).map(c => c.value)
+    );
+    if (items.length === 0) {
+        libraryGrid.innerHTML = '<p style="color: var(--muted); font-size: 0.9rem; grid-column: 1/-1;">Nenhum GIF dispon&iacute;vel. Envie pelo card 3 ou pela biblioteca de uploads.</p>';
+    } else {
+        libraryGrid.innerHTML = items.map(f => {
+            const checked = previouslyChecked.has(f) || previouslyChecked.size === 0 ? 'checked' : '';
+            return `
+            <label style="display:flex; flex-direction:column; align-items:center; gap:0.35rem; background:#0f172a; border:1px solid #334155; border-radius:8px; padding:0.5rem; cursor:pointer; font-size:0.8rem;">
+                <input type="checkbox" value="${f}" ${checked} style="margin:0;">
+                <img src="/library/gif/${encodeURIComponent(f)}" loading="lazy" style="width:96px; height:96px; object-fit:contain; border-radius:6px; background:#1a1a2e;" alt="preview">
+                <span style="word-break:break-all; text-align:center; color:var(--muted);">${f}</span>
+            </label>`;
+        }).join("");
+    }
+    updateLibraryButtons();
+}
+
+document.getElementById("btnRefreshLibrary").onclick = refreshLibrary;
+document.getElementById("btnSelectAllLibrary").onclick = () => {
+    libraryGrid.querySelectorAll("input[type=checkbox]").forEach(c => c.checked = true);
+    updateLibraryButtons();
+};
+document.getElementById("btnSelectNoneLibrary").onclick = () => {
+    libraryGrid.querySelectorAll("input[type=checkbox]").forEach(c => c.checked = false);
+    updateLibraryButtons();
+};
+libraryGrid.addEventListener("change", updateLibraryButtons);
+
+btnPlayRandom.onclick = async () => {
+    const filenames = Array.from(libraryGrid.querySelectorAll("input[type=checkbox]:checked")).map(c => c.value);
+    if (filenames.length === 0) return;
+    const mode = document.getElementById("libraryMode").value;
+    const interval = parseFloat(document.getElementById("libraryInterval").value) || 0;
+    libraryStatus.className = "status";
+    libraryStatus.textContent = mode === "loop" ? "Iniciando modo cont\u00ednuo..." : "Sorteando GIF...";
+    libraryStatus.style.display = "block";
+    try {
+        const data = await postJSON("/library/play", {
+            filenames,
+            loop: mode === "loop",
+            interval,
+            pixels: parseInt(pixelsSel.value),
+        });
+        setStatus(libraryStatus, data.ok, data.ok ? (mode === "loop" ? `Tocando ${data.count} GIF(s) em loop.` : "GIF enviado!") : "Erro: " + data.error);
+        btnStopRandom.disabled = !data.ok || mode !== "loop";
+    } catch (e) {
+        setStatus(libraryStatus, false, "Erro: " + e);
+    }
+};
+
+btnStopRandom.onclick = async () => {
+    await postJSON("/library/stop", {});
+    btnStopRandom.disabled = true;
+    setStatus(libraryStatus, true, "Loop parado.");
+};
+
+refreshLibrary();
+setInterval(refreshLibrary, 10000);
 </script>
 </body>
 </html>
@@ -1027,10 +1197,17 @@ def gif():
     unique = f"{uuid.uuid4().hex}_{safe}"
     dest = os.path.join(app.config["UPLOAD_FOLDER"], unique)
     f.save(dest)
+    existing = _existing_gif_by_hash(_hash_file(dest))
+    if existing and existing != dest:
+        try:
+            os.remove(dest)
+        except OSError:
+            pass
+        dest = existing
     pixel_size = int(request.form.get("pixels", 32))
     try:
         run_async(_send_gif(dest, pixel_size))
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "gif_name": os.path.basename(dest), "deduplicated": existing is not None})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 
@@ -1042,20 +1219,42 @@ def schedule_list():
 
 @app.route("/schedule/add", methods=["POST"])
 def schedule_add():
-    if "file" not in request.files:
+    files = request.files.getlist("files")
+    if not files and "file" in request.files:
+        files = [request.files["file"]]
+    if not files:
         return jsonify({"ok": False, "error": "Arquivo obrigat\u00f3rio"})
-    f = request.files["file"]
-    if not f.filename or not f.filename.lower().endswith(".gif"):
-        return jsonify({"ok": False, "error": "Envie um .gif"})
-    safe = secure_filename(f.filename)
-    unique = f"{uuid.uuid4().hex}_{safe}"
-    gif_path = os.path.join(UPLOAD_FOLDER, unique)
-    f.save(gif_path)
+    saved: list[tuple[str, str]] = []
+    for f in files:
+        if not f or not f.filename:
+            continue
+        if not f.filename.lower().endswith(".gif"):
+            return jsonify({"ok": False, "error": f"Arquivo inv\u00e1lido: {f.filename}"})
+        safe = secure_filename(f.filename)
+        unique = f"{uuid.uuid4().hex}_{safe}"
+        gif_path = os.path.join(UPLOAD_FOLDER, unique)
+        f.save(gif_path)
+        existing = _existing_gif_by_hash(_hash_file(gif_path))
+        if existing and existing != gif_path:
+            try:
+                os.remove(gif_path)
+            except OSError:
+                pass
+            gif_path = existing
+            safe = os.path.basename(existing)
+        saved.append((gif_path, safe))
+    if not saved:
+        return jsonify({"ok": False, "error": "Nenhum GIF v\u00e1lido enviado"})
     days = [d.strip() for d in request.form.get("days", "").split(",") if d.strip()]
+    gifs = [p for p, _ in saved]
+    names = [n for _, n in saved]
     item = {
         "id": uuid.uuid4().hex,
-        "gif_path": gif_path,
-        "gif_name": safe,
+        "gifs": gifs,
+        "gif_paths": gifs,
+        "gif_path": gifs[0],
+        "gif_name": names[0] if len(names) == 1 else f"{len(names)} GIFs",
+        "gif_names": names,
         "start_time": request.form.get("start_time", "08:00"),
         "end_time": request.form.get("end_time", "18:00"),
         "days": days,
@@ -1072,7 +1271,7 @@ def schedule_add():
     items = load_schedule()
     items.append(item)
     save_schedule(items)
-    return jsonify({"ok": True, "id": item["id"]})
+    return jsonify({"ok": True, "id": item["id"], "count": len(gifs)})
 
 
 @app.route("/schedule/delete", methods=["POST"])
@@ -1158,10 +1357,87 @@ def schedule_gif_route(item_id):
     items = load_schedule()
     for it in items:
         if it["id"] == item_id:
-            gif_path = it.get("gif_path", "")
-            if os.path.exists(gif_path):
-                return send_file(gif_path, mimetype="image/gif")
+            gifs = _item_gifs(it)
+            if gifs and os.path.isfile(gifs[0]):
+                return send_file(gifs[0], mimetype="image/gif")
     return jsonify({"ok": False}), 404
+
+
+def _item_gifs(item: dict) -> list[str]:
+    gifs = item.get("gifs") or item.get("gif_paths")
+    if gifs:
+        return [g for g in gifs if g]
+    single = item.get("gif_path")
+    return [single] if single else []
+
+
+@app.route("/library")
+def library_list():
+    return jsonify({"items": list_library()})
+
+
+@app.route("/library/gif/<path:filename>")
+def library_gif_route(filename):
+    safe = secure_filename(filename)
+    path = os.path.join(UPLOAD_FOLDER, safe)
+    if os.path.isfile(path) and safe.lower().endswith(".gif"):
+        return send_file(path, mimetype="image/gif")
+    return jsonify({"ok": False}), 404
+
+
+@app.route("/library/play", methods=["POST"])
+def library_play():
+    payload = request.get_json(silent=True) or {}
+    filenames = payload.get("filenames") or []
+    loop = bool(payload.get("loop", False))
+    interval = float(payload.get("interval", 0))
+    if not isinstance(filenames, list) or not filenames:
+        return jsonify({"ok": False, "error": "Selecione pelo menos um GIF."})
+    valid = []
+    for name in filenames:
+        if not isinstance(name, str):
+            continue
+        safe = secure_filename(name)
+        path = os.path.join(UPLOAD_FOLDER, safe)
+        if safe.lower().endswith(".gif") and os.path.isfile(path):
+            valid.append(path)
+    if not valid:
+        return jsonify({"ok": False, "error": "Nenhum GIF v\u00e1lido selecionado."})
+    pixel_size = int(payload.get("pixels", load_state().get("pixels", 32)))
+
+    _library_loop_state["stop"].set()
+    if _library_loop_state["thread"] and _library_loop_state["thread"].is_alive():
+        _library_loop_state["thread"].join(timeout=1.0)
+    _library_loop_state["stop"].clear()
+    _library_loop_state["enabled"] = True
+    _library_loop_state["paths"] = valid
+    _library_loop_state["pixel_size"] = pixel_size
+    _library_loop_state["interval"] = max(0.0, interval)
+
+    def _runner():
+        while not _library_loop_state["stop"].is_set():
+            chosen = random.choice(valid)
+            try:
+                run_async(_send_gif(chosen, pixel_size))
+            except Exception as e:
+                print(f"[library loop] error: {e}")
+            wait = interval if interval > 0 else 5.0
+            if _library_loop_state["stop"].wait(wait):
+                break
+            if not loop:
+                break
+
+    t = threading.Thread(target=_runner, daemon=True)
+    _library_loop_state["thread"] = t
+    t.start()
+    return jsonify({"ok": True, "loop": loop, "count": len(valid)})
+
+
+@app.route("/library/stop", methods=["POST"])
+def library_stop():
+    _library_loop_state["stop"].set()
+    _library_loop_state["enabled"] = False
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":
