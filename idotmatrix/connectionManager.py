@@ -11,21 +11,13 @@ import threading
 class SingletonMeta(type):
     logging = logging.getLogger(__name__)
     _instances: dict = {}
-    _local = threading.local()
+    _lock = threading.Lock()
 
     def __call__(cls, *args, **kwargs) -> "SingletonMeta":
-        if not hasattr(cls._local, "instance") or cls._local.instance is None:
-            instance = super().__call__(*args, **kwargs)
-            cls._local.instance = instance
+        with cls._lock:
             if cls not in cls._instances:
-                try:
-                    instance = super().__call__(*args, **kwargs)
-                    cls._instances[cls] = instance
-                    return cls._instances[cls]
-                except:
-                    cls._instances.pop(cls, None)
-                    raise
-        return cls._local.instance
+                cls._instances[cls] = super().__call__(*args, **kwargs)
+        return cls._instances[cls]
 
 
 class ConnectionManager(metaclass=SingletonMeta):

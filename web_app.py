@@ -22,12 +22,27 @@ app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 DAYS_PT = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
 
 
-def run_async(coro):
+_ble_loop: asyncio.AbstractEventLoop | None = None
+_ble_loop_ready = threading.Event()
+
+
+def _ble_loop_worker() -> None:
+    global _ble_loop
     loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+    asyncio.set_event_loop(loop)
+    _ble_loop = loop
+    _ble_loop_ready.set()
+    loop.run_forever()
+
+
+_ble_thread = threading.Thread(target=_ble_loop_worker, daemon=True, name="ble-loop")
+_ble_thread.start()
+_ble_loop_ready.wait()
+
+
+def run_async(coro):
+    future = asyncio.run_coroutine_threadsafe(coro, _ble_loop)
+    return future.result()
 
 
 def load_schedule() -> list:
